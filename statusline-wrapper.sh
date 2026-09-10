@@ -3,7 +3,7 @@
 #
 #   139.1k [▓░░░░░░░░░] 14% | $2 | my-project | main
 #
-# Renders via ccstatusline, then applies five fixes ccstatusline can't do itself:
+# Renders via ccstatusline, then applies six fixes ccstatusline can't do itself:
 #
 #   1. Rounds the context percentage to a whole number. ccstatusline hardcodes
 #      one decimal place (`toFixed(1)` in ContextPercentageWidget) with no config
@@ -28,6 +28,24 @@
 #      colorLevel says -- and Apple Terminal has no 24-bit support, so it would
 #      drop the color entirely. The fold is general rather than keyed to one
 #      value, so changing that hex in the config keeps working.
+#
+#   6. Tells ccstatusline how wide the terminal is, via CCSTATUSLINE_WIDTH.
+#      See "WHY THE WIDTH IS PASSED IN" below.
+#
+# WHY THE WIDTH IS PASSED IN:
+#
+# ccstatusline truncates its own output with "..." once the line exceeds the
+# width it thinks the terminal has, and it works that width out for itself:
+# `probeTerminalWidth` walks up the process tree with `ps -o ppid=`, looking for
+# an ancestor with a real tty, then reads the size with `stty -f /dev/ttysNNN`.
+# When any step of that fails it falls back to `tput cols`, which -- with stdout
+# a pipe and stderr discarded -- has no terminal to ask and returns the terminfo
+# default of 80. The line then gets cut well short of the real edge.
+#
+# CCSTATUSLINE_WIDTH is checked before all of that, so setting it takes the
+# guesswork out. The probe below is the same idea but starts one process closer
+# to the tty, and -- the part that matters -- when it comes up empty it reuses
+# the last width that did work for this session instead of assuming 80.
 #
 # HOW THE RECOLOR FINDS ITS TARGETS -- this couples this file to
 # ccstatusline-settings.json:
@@ -69,7 +87,50 @@ if [ -z "$CCSTATUSLINE" ]; then
     exit 0
 fi
 
-line=$("$CCSTATUSLINE" | perl -0777 -pe '
+# Claude Code feeds the session as JSON on stdin, and ccstatusline needs it, so
+# it is read here and handed on rather than left to flow through untouched.
+payload=$(cat)
+
+# Walk up from this script looking for an ancestor with a controlling terminal.
+# This script itself has none (Claude Code runs it with pipes), but its parent
+# -- the Claude Code process -- does. Eight levels is far more than that needs
+# and stops the loop from running away if `ps` starts returning nonsense.
+detect_width() {
+    local pid=$$ parent tty cols _i
+    for _i in 1 2 3 4 5 6 7 8; do
+        parent=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+        case "$parent" in ''|0|*[!0-9]*) return 1 ;; esac
+        pid=$parent
+        tty=$(ps -o tty= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+        # "?" and "??" are how ps spells "this process has no terminal".
+        case "$tty" in ''|'?'|'??') continue ;; esac
+        cols=$(stty -f "/dev/$tty" size 2>/dev/null | awk '{print $2}')
+        case "$cols" in ''|*[!0-9]*|0) continue ;; esac
+        printf '%s' "$cols"
+        return 0
+    done
+    return 1
+}
+
+# One cache file per session, so two terminals of different widths can't hand
+# each other a stale answer. The id is scrubbed because it becomes a filename.
+session_id=$(printf '%s' "$payload" \
+    | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+    | tr -cd 'A-Za-z0-9._-')
+width_cache="${TMPDIR:-/tmp}/ccstatusline-width-${session_id:-default}"
+
+if width=$(detect_width); then
+    printf '%s\n' "$width" > "$width_cache" 2>/dev/null
+elif [ -r "$width_cache" ]; then
+    width=$(tr -cd '0-9' < "$width_cache")
+fi
+# Left unset when there is nothing trustworthy to say, which puts ccstatusline
+# back on its own detection rather than on a number this script invented.
+if [ -n "$width" ]; then
+    export CCSTATUSLINE_WIDTH="$width"
+fi
+
+line=$(printf '%s' "$payload" | "$CCSTATUSLINE" | perl -0777 -pe '
   s/(\d+)\.(\d)%/sprintf("%d%%", $1 + ($2 >= 5 ? 1 : 0))/ge;
 
   s/(\e\[[0-9;]*m)\.\.\.\//$1/g;
