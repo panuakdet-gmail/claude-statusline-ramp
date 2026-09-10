@@ -65,7 +65,10 @@ for spec in \
     "99:990.0k:90%+        soft red"
 do
     IFS=: read -r pct tokens label <<< "$spec"
-    rendered="$(SAMPLE_LINE="$(sample "$pct" "$tokens")" PATH="$STAGE:$PATH" "$WRAPPER")"
+    # </dev/null because the wrapper reads the session JSON from stdin: without
+    # it, the wrapper inherits this script's stdin and sits waiting on the
+    # terminal instead of drawing a sample.
+    rendered="$(SAMPLE_LINE="$(sample "$pct" "$tokens")" PATH="$STAGE:$PATH" "$WRAPPER" </dev/null)"
     printf '  %s   \e[38;5;59m%s\e[39m\n' "$rendered" "$label"
 done
 

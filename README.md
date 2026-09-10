@@ -51,6 +51,65 @@ just being one more shade of green.
 
 ---
 
+## The second line: how much of your plan is left
+
+Claude Code also knows how much of your Claude subscription you have used — the
+5-hour window and the weekly one. It hands those figures to the status line and
+to nothing else, so this is the only place they can be shown. When they are
+available, a second row appears underneath the first:
+
+```
+139.1k [▓░░░░░░░░░] 14% | $2 | my-project | main
+5h ▬▬░░░░░░░░  17%  ↻ 3PM   7d ▬▬▬▬░░░░░░  38%  ↻ Tue 6AM
+```
+
+Two meters, side by side. The left one is your 5-hour window, the right one your
+week.
+
+| Part | Example | What it is |
+|---|---|---|
+| Label | `5h` | Which window. `5h` is the rolling 5-hour limit, `7d` the weekly one. |
+| Bar | `▬▬░░░░░░░░` | Ten cells, one per 10% of that window used. Any usage at all fills at least one cell, so "barely started" still looks different from "not started". |
+| Percentage | `17%` | How much of the window is used up. This is the number the row is really about, so it is the brightest thing in it. |
+| Reset time | `↻ 3PM` | The clock time the window empties again — not how long you have to wait. |
+
+The bar is blue while there is room, turns orange at 75% used, and red at 90% —
+the same two boundaries the first line uses, so those numbers mean one thing
+wherever they appear on the status line.
+
+The reset time is deliberately a clock time rather than "resets in 3 hr 13 min":
+a countdown changes on every redraw and still has to be added to the current
+time before it tells you anything. It is written three ways depending on how far
+off it is:
+
+| When it resets | Shown as |
+|---|---|
+| Later today | `3PM` |
+| Later this week | `Tue 6AM` |
+| A week or more away | `Sep 17` |
+
+Windows reset on the hour, so the minutes are left off — `3PM`, not `3:00PM`.
+They appear (`3:20PM`) on the rare occasion they are not zero.
+
+### When it appears, and when it doesn't
+
+The row draws itself only when there is something true to say. It is absent:
+
+- **until Claude has replied once** in the session — Claude Code doesn't know
+  your usage before then;
+- **for accounts with no subscription limits** — API-key and other pay-as-you-go
+  accounts have nothing to report here;
+- **for a window that has already reset** — Claude Code drops it from the data,
+  and it comes back on your next reply.
+
+So a fresh session starts one line high and grows a second line once Claude
+answers you. Nothing has gone wrong when you see only one line.
+
+To keep the single-line look permanently, set `CCRAMP_PLAN_LINE=off` in the
+environment Claude Code starts in.
+
+---
+
 ## Before you start
 
 You need three things. The installer checks for all of them and tells you what's
@@ -131,7 +190,7 @@ If your terminal says `permission denied`, the file just needs marking as
 runnable once:
 
 ```bash
-chmod +x install.sh uninstall.sh preview-ramp.sh
+chmod +x install.sh uninstall.sh preview-ramp.sh preview-plan.sh
 ```
 
 ### Option C — do it by hand
@@ -170,6 +229,16 @@ That prints one sample line per band, including both sides of every boundary.
 It builds those samples and pushes them through the real script, so it can't
 drift out of step with what you'll actually see.
 
+And for the plan-usage row, which otherwise takes a busy week to show you all of
+itself:
+
+```bash
+./preview-plan.sh
+```
+
+That one prints a sample meter per colour band and per reset-time format, the
+same way — real script, made-up figures.
+
 ---
 
 ## Changing it to taste
@@ -198,6 +267,24 @@ for i in {0..255}; do printf '\e[38;5;%dm %3d \e[0m' "$i" "$i"; done; echo
 ```
 
 After any change, run `./preview-ramp.sh` to see all five bands at once.
+
+### The plan row's colours
+
+The second line has its own, shorter ramp, further down the same file:
+
+```perl
+my $fill = $whole >= 90 ? "38;5;167"   # soft red   #D75F5F
+         : $whole >= 75 ? "38;5;208"   # orange     #FF8700
+         :                "38;5;74";   # steel blue #5FAFD7
+```
+
+That one colours the bar only. The three text colours sit just below it, in the
+`sprintf` calls: `38;5;59` for the label, `38;5;255` for the percentage,
+`38;5;145` for the reset time. They are meant to be read as an order — dimmest
+label, brightest percentage — so if you change one, change it in a way that
+keeps the percentage the easiest thing to find.
+
+Run `./preview-plan.sh` afterwards to see the result.
 
 ### Rearranging the pieces
 
@@ -263,6 +350,16 @@ else is wrong.
 Your terminal font is missing those two characters. Most monospace fonts have
 them; Menlo, Monaco, SF Mono, JetBrains Mono, and Fira Code all do.
 
+**The plan-usage row never appears.**
+Most likely there is nothing to show: it needs a Claude subscription, and it
+stays hidden until Claude has replied once in the session. Send a message and
+look again. If it still doesn't appear, check that `CCRAMP_PLAN_LINE` isn't set
+to `off`.
+
+**The plan-usage bar shows boxes instead of `▬░`.**
+Same as above — a font gap. `▬` is the one to check; it is less common than the
+block characters used on the first line.
+
 **The colours never change.**
 Something else is probably using the same colour as the context items, or they
 no longer share one. See the rule in "Rearranging the pieces" above.
@@ -295,6 +392,13 @@ occurrence of that same code in the line. That's why the three context items
 have to share a colour — it's the handle the script grabs them by. The upside is
 that it keeps working if you change that colour in ccstatusline's editor, rather
 than silently doing nothing.
+
+The second line is not ccstatusline's work at all. Claude Code puts your
+subscription's usage figures — percentage used and reset time for each window —
+into the same blob of session information, and `statusline-wrapper.sh` reads
+them straight out of it and draws the two meters itself. That data is given to
+the status line and to nothing else in Claude Code, which is why it lives here
+rather than in a hook or a separate widget.
 
 The comments in `statusline-wrapper.sh` go further if you want the details.
 

@@ -187,3 +187,110 @@ if [ -z "$line" ]; then
 fi
 
 printf '%s\n' "$line"
+
+# ------------------------------------------------------------- THE SECOND LINE
+#
+# An optional second row showing how much of the Claude subscription plan is
+# used up:
+#
+#   5h ▬▬░░░░░░░░  17%  ↻ 3PM   7d ▬▬▬▬░░░░░░  38%  ↻ Tue 6AM
+#
+# Claude Code puts these figures in the status line payload and nowhere else --
+# hooks never see them -- so the only place they can be drawn is here.
+#
+#   "rate_limits": {
+#     "five_hour": { "used_percentage": 6.0, "resets_at": 1789027200 },
+#     "seven_day": { "used_percentage": 3.0, "resets_at": 1789426800 }
+#   }
+#
+# The block is absent until Claude has replied once, absent for accounts that
+# have no subscription limits, and each window disappears again once its reset
+# time passes. Nothing is printed in any of those cases, so the status line
+# stays one line high until there is something true to say.
+#
+# Set CCRAMP_PLAN_LINE=off to switch the row off and keep the single-line look.
+plan_line=$(printf '%s' "$payload" | perl -0777 -e '
+  exit 0 if ($ENV{CCRAMP_PLAN_LINE} // "") =~ /^(0|off|false|no)$/i;
+
+  my $json = <STDIN> // "";
+
+  # Everything is read from the tail of the payload that starts at
+  # "rate_limits", so a "used_percentage" belonging to context_window cannot be
+  # mistaken for one of these. Each window is a flat object -- no nested braces
+  # -- which is what lets [^{}]* stand in for a real JSON parser here.
+  my ($limits) = $json =~ /"rate_limits"\s*:\s*\{(.*)$/s;
+  exit 0 unless defined $limits;
+
+  my @meters;
+  for my $window ([ "5h", "five_hour" ], [ "7d", "seven_day" ]) {
+      my ($label, $key) = @$window;
+      next unless $limits =~ /"\Q$key\E"\s*:\s*\{([^{}]*)\}/;
+      my $body = $1;
+      my ($pct) = $body =~ /"used_percentage"\s*:\s*(-?[0-9.]+)/;
+      my ($at)  = $body =~ /"resets_at"\s*:\s*([0-9]+)/;
+      next unless defined $pct;
+      push @meters, meter($label, $pct, $at);
+  }
+  exit 0 unless @meters;
+
+  print join("   ", @meters), "\n";
+
+  sub meter {
+      my ($label, $pct, $at) = @_;
+      my $whole = int($pct + 0.5);
+
+      # Ten cells, one per 10%. A window with any usage at all gets one cell
+      # rather than an empty bar, so "barely started" still reads differently
+      # from "not started". Over 100% (possible on a spend limit) is clamped so
+      # the bar cannot outgrow its ten cells.
+      my $filled = int($pct / 10 + 0.5);
+      $filled = 1  if $filled < 1 && $pct > 0;
+      $filled = 10 if $filled > 10;
+
+      # Blue while there is room, warming up as the window fills. The bands
+      # match the context ramp on the first line, so 75 and 90 mean the same
+      # thing wherever they appear.
+      my $fill = $whole >= 90 ? "38;5;167"   # soft red   #D75F5F
+               : $whole >= 75 ? "38;5;208"   # orange     #FF8700
+               :                "38;5;74";   # steel blue #5FAFD7
+
+      # The percentage is what the eye should land on, so it is the brightest
+      # thing here; the label is dimmest, and the reset time sits between them.
+      my $bar = sprintf("\e[%sm%s\e[38;5;59m%s\e[39m",
+                        $fill, "▬" x $filled, "░" x (10 - $filled));
+      my $out = sprintf("\e[38;5;59m%s\e[39m %s \e[1m\e[38;5;255m%3d%%\e[22m\e[39m",
+                        $label, $bar, $whole);
+      $out .= sprintf("  \e[38;5;145m↻ %s\e[39m", clock_time($at)) if defined $at;
+      return $out;
+  }
+
+  # A clock time, never a countdown: "resets in 3 hr 13 min" changes on every
+  # redraw and still has to be added to the current time to mean anything.
+  sub clock_time {
+      my ($epoch) = @_;
+      my @t   = localtime($epoch);
+      my @now = localtime(time);
+
+      my $hour = $t[2] % 12 || 12;
+      my $ampm = $t[2] < 12 ? "AM" : "PM";
+      # Windows reset on the hour, so the minutes are almost always ":00" and
+      # only earn their space when they are not.
+      my $clock = $t[1] ? sprintf("%d:%02d%s", $hour, $t[1], $ampm)
+                        : sprintf("%d%s", $hour, $ampm);
+
+      return $clock if $t[5] == $now[5] && $t[7] == $now[7];
+
+      # A weekday name only says which day while it is unambiguous. Seven days
+      # out it lands on todays name and would read as this morning, so anything
+      # that far ahead gets a date instead.
+      my @day   = qw(Sun Mon Tue Wed Thu Fri Sat);
+      my @month = qw(Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec);
+      return "$day[$t[6]] $clock"
+          if $epoch - time < 7 * 86400 && $t[6] != $now[6];
+      return "$month[$t[4]] $t[3]";
+  }
+')
+
+if [ -n "$plan_line" ]; then
+    printf '%s\n' "$plan_line"
+fi
